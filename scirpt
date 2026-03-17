@@ -1,0 +1,283 @@
+-- [[ CONFIGURATION ]] --
+local Config = {
+    MainFolder = "VisualBrainrots", 
+    ActiveFolder = "ActiveBrainrots", 
+    ZoneFolder = "Zones", 
+    PatrolHeight = 5,
+    ScanInterval = 0.2, 
+    InteractRange = 25,
+    SyncSpeed = 0.1, 
+    SaveFileName = "BrainrotConfig.json", -- ชื่อไฟล์ที่จะเก็บในโฟลเดอร์ workspace
+
+    UI = {
+        MainWidth = 320, MainHeight = 550, 
+        Font = Enum.Font.GothamBold,
+        BgColor = Color3.fromRGB(25, 25, 25), BgTransparency = 0.1,
+        TextColor = Color3.fromRGB(255, 255, 255), 
+        BtnDefaultColor = Color3.fromRGB(45, 45, 45), 
+        BtnSelectedColor = Color3.fromRGB(0, 100, 200),
+        SelectAllColor = Color3.fromRGB(40, 150, 80), 
+        ClearAllColor = Color3.fromRGB(150, 40, 40),  
+        ZoneSelectedColor = Color3.fromRGB(255, 150, 0), 
+        SellActiveColor = Color3.fromRGB(255, 50, 50),
+    }
+}
+
+local UnitNames = {"Evil Six Seven", "Meowl", "Six Seven", "Bombardiro Crocodilo", "Cocofanto Elefanto", "La Vacca Saturno Saturnita", "Glorbo Fruttodrillo", "Boneca Ambalabu", "Tralalero Tralala", "Ganganzelli Trulala", "Trippi Troppi", "Brr Brr Patapim", "Tictac Sahur", "Ketupat Kepat", "Tung Tung Citos", "Odin Din Din Dun", "Pakrahmatmamat", "Orcalero Orcala", "Los Bros", "Cooki and Milki", "Ballerina Cappuccina", "Alessio", "Pipi Kiwi", "Talpa Di Ferro", "Esok Sekolah", "Swag Soda", "Chimpanzini Bananini", "Matteo", "Chillin Chilli", "Noobini Pizzanini", "Cacto Hipopotamo", "Frigo Camelo", "Los Matteos", "Los Tralaleritos", "Grapus Medusi", "Tralalerita Tralala", "Chicleteira Bicicleteira", "Ta Ta Ta Ta Sahur", "Tung Tung Tung Sahur", "Dragon Cannelloni", "Tim Cheese", "Strawberry Elephant", "Trulimero Trulicina", "Tipi Topi Taco", "Capi Taco", "Karkerkar Kurkur", "Espressona Signora", "Bambini Crostini", "Fluri Flura", "Bananita Dolphinita", "Agarrini La Palini", "Gangster Footera", "Pandaccini Bananini", "Lirili Larila", "Bandito Bobrito", "Sneaky Tralaleritos", "Chef Crabracadabra", "Cappuccino Assassino", "Los Crocodillitos", "Rhino Toasterino", "Garama and Madundung", "Svinina Bombardino"}
+
+-- [[ SERVICES ]] --
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local player = Players.LocalPlayer
+
+-- [[ STATE ]] --
+local selectedUnits = {}
+local protectedUnits = {} 
+local selectedZones = {}
+local autoSellActive = false
+local patrolList = {}
+local patrolIdx = 1
+local patrolDir = 1
+
+-- [[ SAVE/LOAD SYSTEM ]] --
+local function saveConfig()
+    local data = {
+        selectedUnits = selectedUnits,
+        protectedUnits = protectedUnits,
+        selectedZones = selectedZones,
+        autoSellActive = autoSellActive
+    }
+    local success, json = pcall(function() return HttpService:JSONEncode(data) end)
+    if success then
+        writefile(Config.SaveFileName, json)
+    end
+end
+
+local function loadConfig()
+    if isfile(Config.SaveFileName) then
+        local success, data = pcall(function() 
+            return HttpService:JSONDecode(readfile(Config.SaveFileName)) 
+        end)
+        if success then
+            selectedUnits = data.selectedUnits or {}
+            protectedUnits = data.protectedUnits or {}
+            selectedZones = data.selectedZones or {}
+            autoSellActive = data.autoSellActive or false
+            
+            -- อัปเดต Patrol List หลังโหลด
+            patrolList = {}; for z,v in pairs(selectedZones) do if v then table.insert(patrolList, tonumber(z)) end end
+            table.sort(patrolList)
+        end
+    end
+end
+
+-- โหลดค่าก่อนสร้าง UI
+loadConfig()
+
+-- [[ HELPERS ]] --
+local function getTargetCFrame(obj)
+    if not obj then return nil end
+    return obj:IsA("BasePart") and obj.CFrame or (obj:IsA("Model") and (obj.PrimaryPart and obj.PrimaryPart.CFrame or obj:GetModelCFrame()))
+end
+
+local function isIgnored(item)
+    return string.find(item.Name:lower(), "bat") ~= nil
+end
+
+local function isItemLocked(item)
+    if isIgnored(item) then return true end
+    local itemName = string.gsub(item.Name:lower(), "%s+", "") -- ตัดช่องว่างออก
+    for protectedName, isLocked in pairs(protectedUnits) do
+        if isLocked then
+            local cleanProtected = string.gsub(protectedName:lower(), "%s+", "") -- ตัดช่องว่างชื่อที่ล็อค
+            if string.find(itemName, cleanProtected) then return true end
+        end
+    end
+    return false
+end
+
+-- [[ RUNTIME STORAGE PROCESSOR ]] --
+task.spawn(function()
+    while task.wait(Config.SyncSpeed) do
+        if not autoSellActive then continue end
+        local char = player.Character; local bp = player:FindFirstChild("Backpack")
+        if not char or not bp then continue end
+
+        -- 1. ตรวจสอบไอเทมในมือ (Character)
+        for _, item in pairs(char:GetChildren()) do
+            if item:IsA("Tool") then
+                if isIgnored(item) then continue end
+                
+                if isItemLocked(item) then 
+                    -- ถ้าเป็นตัวล็อค ย้ายลงกระเป๋าทันที
+                    item.Parent = bp 
+                else
+                    -- ** Double Check Logic **
+                    task.wait(0.05) -- จังหวะหายใจให้ระบบอัปเดตสถานะชื่อ
+                    if not isItemLocked(item) then
+                        local remote = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("SellBrainrot")
+                        if remote then 
+                            remote:FireServer("Single") 
+                        end
+                    end
+                end
+                task.wait(0.05) -- กัน Remote Spam
+            end
+        end
+
+        -- 2. ตรวจสอบไอเทมในกระเป๋า (Backpack) เพื่อดึงมาขาย
+        local handBusy = false
+        for _, item in pairs(char:GetChildren()) do 
+            if item:IsA("Tool") and not isIgnored(item) then 
+                handBusy = true break 
+            end 
+        end
+
+        if not handBusy then
+            for _, item in pairs(bp:GetChildren()) do
+                if item:IsA("Tool") and not isIgnored(item) and not isItemLocked(item) then
+                    item.Parent = char
+                    break -- ดึงมาขายทีละชิ้นตามคิว
+                end
+            end
+        end
+    end
+end)
+
+-- [[ GUI CONSTRUCTION ]] --
+local screenGui = Instance.new("ScreenGui", player.PlayerGui)
+screenGui.Name = "AutoSave_V8_6"
+screenGui.ResetOnSpawn = false
+
+local mainFrame = Instance.new("Frame", screenGui)
+mainFrame.Size = UDim2.new(0, Config.UI.MainWidth, 0, Config.UI.MainHeight)
+mainFrame.Position = UDim2.new(0.5, -Config.UI.MainWidth/2, 0.2, 0)
+mainFrame.BackgroundColor3 = Config.UI.BgColor; mainFrame.BackgroundTransparency = Config.UI.BgTransparency
+mainFrame.Active = true; mainFrame.Draggable = true; Instance.new("UICorner", mainFrame)
+
+local tabFrame = Instance.new("Frame", mainFrame)
+tabFrame.Size = UDim2.new(1, -20, 0, 40); tabFrame.Position = UDim2.new(0, 10, 0, 10); tabFrame.BackgroundTransparency = 1
+
+local unitPage = Instance.new("Frame", mainFrame)
+local zonePage = Instance.new("Frame", mainFrame)
+local sellPage = Instance.new("Frame", mainFrame)
+
+for _, p in pairs({unitPage, zonePage, sellPage}) do
+    p.Size = UDim2.new(1, 0, 1, -100); p.Position = UDim2.new(0, 0, 0, 60); p.BackgroundTransparency = 1; p.Visible = false
+end
+unitPage.Visible = true
+
+local function createTabBtn(text, pos, width, page)
+    local btn = Instance.new("TextButton", tabFrame)
+    btn.Size = UDim2.new(width, -4, 1, 0); btn.Position = pos; btn.Text = text
+    btn.TextSize = 12; btn.Font = Config.UI.Font; btn.BackgroundColor3 = Color3.fromRGB(35,35,35); btn.TextColor3 = Config.UI.TextColor; Instance.new("UICorner", btn)
+    btn.MouseButton1Click:Connect(function() unitPage.Visible = false; zonePage.Visible = false; sellPage.Visible = false; page.Visible = true end)
+    return btn
+end
+
+createTabBtn("Units", UDim2.new(0,0,0,0), 0.33, unitPage)
+createTabBtn("Zones", UDim2.new(0.33,0,0,0), 0.33, zonePage)
+createTabBtn("Auto Sell", UDim2.new(0.66,0,0,0), 0.34, sellPage)
+
+-- Units UI
+local selFrame = Instance.new("Frame", unitPage)
+selFrame.Size = UDim2.new(1,-20,0,35); selFrame.Position = UDim2.new(0,10,0,0); selFrame.BackgroundTransparency = 1
+local sAll = Instance.new("TextButton", selFrame); sAll.Size = UDim2.new(0.48,0,1,0); sAll.Text = "เลือกทั้งหมด (แนะนำ)"; sAll.TextColor3 = Config.UI.TextColor; sAll.BackgroundColor3 = Config.UI.SelectAllColor; Instance.new("UICorner", sAll)
+local cAll = Instance.new("TextButton", selFrame); cAll.Size = UDim2.new(0.48,0,1,0); cAll.Position = UDim2.new(0.52,0,0,0); cAll.Text = "ล้างทั้งหมด"; cAll.TextColor3 = Config.UI.TextColor; cAll.BackgroundColor3 = Config.UI.ClearAllColor; Instance.new("UICorner", cAll)
+
+local unitSearch = Instance.new("TextBox", unitPage)
+unitSearch.Size = UDim2.new(1,-20,0,35); unitSearch.Position = UDim2.new(0,10,0,45); unitSearch.PlaceholderText = "🔍 ค้นหาตัว..."; unitSearch.BackgroundColor3 = Color3.fromRGB(40,40,40); unitSearch.TextColor3 = Config.UI.TextColor; Instance.new("UICorner", unitSearch)
+
+local unitScroll = Instance.new("ScrollingFrame", unitPage)
+unitScroll.Size = UDim2.new(1,-20,0,320); unitScroll.Position = UDim2.new(0,10,0,90); unitScroll.BackgroundTransparency = 1; unitScroll.AutomaticCanvasSize = "Y"
+Instance.new("UIListLayout", unitScroll).Padding = UDim.new(0,5)
+
+-- Auto Sell UI
+local sellTog = Instance.new("TextButton", sellPage)
+sellTog.Size = UDim2.new(1,-20,0,45); sellTog.Position = UDim2.new(0,10,0,0); sellTog.Text = autoSellActive and "ออโต้ขาย: เปิดอยู่" or "ออโต้ขาย: ปิดอยู่"; sellTog.BackgroundColor3 = autoSellActive and Config.UI.SellActiveColor or Config.UI.BtnDefaultColor; sellTog.TextColor3 = Config.UI.TextColor; Instance.new("UICorner", sellTog)
+
+local sellSearch = Instance.new("TextBox", sellPage)
+sellSearch.Size = UDim2.new(1,-20,0,35); sellSearch.Position = UDim2.new(0,10,0,55); sellSearch.PlaceholderText = "🔍 ค้นหาตัว..."; sellSearch.BackgroundColor3 = Color3.fromRGB(40,40,40); sellSearch.TextColor3 = Config.UI.TextColor; Instance.new("UICorner", sellSearch)
+
+local sellScroll = Instance.new("ScrollingFrame", sellPage)
+sellScroll.Size = UDim2.new(1,-20,0,265); sellScroll.Position = UDim2.new(0,10,0,100); sellScroll.BackgroundTransparency = 1; sellScroll.AutomaticCanvasSize = "Y"
+Instance.new("UIListLayout", sellScroll).Padding = UDim.new(0,5)
+
+local status = Instance.new("TextLabel", mainFrame)
+status.Size = UDim2.new(1,0,0,40); status.Position = UDim2.new(0,0,1,-40); status.BackgroundTransparency = 1; status.Text = "READY"; status.TextColor3 = Config.UI.TextColor
+
+-- Generate Buttons with Auto Load State
+local uBtns, pBtns = {}, {}
+for _, n in ipairs(UnitNames) do
+    local b = Instance.new("TextButton", unitScroll); b.Size = UDim2.new(1,-10,0,35); b.Text = n; b.TextColor3 = Config.UI.TextColor; b.BackgroundColor3 = selectedUnits[n] and Config.UI.BtnSelectedColor or Config.UI.BtnDefaultColor; Instance.new("UICorner", b)
+    b.MouseButton1Click:Connect(function() selectedUnits[n] = not selectedUnits[n]; b.BackgroundColor3 = selectedUnits[n] and Config.UI.BtnSelectedColor or Config.UI.BtnDefaultColor; saveConfig() end)
+    uBtns[n] = b
+    
+    local pb = b:Clone(); pb.Parent = sellScroll; pb.BackgroundColor3 = protectedUnits[n] and Color3.fromRGB(150,40,40) or Config.UI.BtnDefaultColor
+    pb.MouseButton1Click:Connect(function() protectedUnits[n] = not protectedUnits[n]; pb.BackgroundColor3 = protectedUnits[n] and Color3.fromRGB(150,40,40) or Config.UI.BtnDefaultColor; saveConfig() end)
+    pBtns[n] = pb
+end
+
+local zoneScroll = Instance.new("ScrollingFrame", zonePage)
+zoneScroll.Size = UDim2.new(1,-20,1,0); zoneScroll.Position = UDim2.new(0,10,0,0); zoneScroll.BackgroundTransparency = 1; zoneScroll.AutomaticCanvasSize = "Y"
+Instance.new("UIListLayout", zoneScroll).Padding = UDim.new(0,5)
+for i=1,10 do
+    local b = Instance.new("TextButton", zoneScroll); b.Size = UDim2.new(1,-10,0,40); b.Text = "Zone "..i; b.TextColor3 = Config.UI.TextColor; b.BackgroundColor3 = selectedZones[tostring(i)] and Config.UI.ZoneSelectedColor or Config.UI.BtnDefaultColor; Instance.new("UICorner", b)
+    b.MouseButton1Click:Connect(function()
+        selectedZones[tostring(i)] = not selectedZones[tostring(i)]; b.BackgroundColor3 = selectedZones[tostring(i)] and Config.UI.ZoneSelectedColor or Config.UI.BtnDefaultColor
+        patrolList = {}; for z,v in pairs(selectedZones) do if v then table.insert(patrolList, tonumber(z)) end end; table.sort(patrolList); patrolIdx = 1; saveConfig()
+    end)
+end
+
+-- Handlers
+sAll.MouseButton1Click:Connect(function() for n,b in pairs(uBtns) do selectedUnits[n]=true; b.BackgroundColor3=Config.UI.BtnSelectedColor end; saveConfig() end)
+cAll.MouseButton1Click:Connect(function() selectedUnits={}; for n,b in pairs(uBtns) do b.BackgroundColor3=Config.UI.BtnDefaultColor end; saveConfig() end)
+sellTog.MouseButton1Click:Connect(function() autoSellActive = not autoSellActive; sellTog.Text = autoSellActive and "Auto Sell: ON" or "Auto Sell: OFF"; sellTog.BackgroundColor3 = autoSellActive and Config.UI.SellActiveColor or Config.UI.BtnDefaultColor; saveConfig() end)
+unitSearch:GetPropertyChangedSignal("Text"):Connect(function() local f = unitSearch.Text:lower() for n,b in pairs(uBtns) do b.Visible = n:lower():find(f) ~= nil end end)
+sellSearch:GetPropertyChangedSignal("Text"):Connect(function() local f = sellSearch.Text:lower() for n,p in pairs(pBtns) do p.Visible = n:lower():find(f) ~= nil end end)
+
+-- [[ RUNTIME LOOPS (MOVEMENT) ]] --
+RunService.Stepped:Connect(function()
+    local char = player.Character; local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    local activeFolder = workspace:FindFirstChild(Config.ActiveFolder)
+    if not activeFolder then return end
+    for _, obj in pairs(activeFolder:GetChildren()) do
+        local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+        if prompt and getTargetCFrame(obj) and (root.Position - getTargetCFrame(obj).Position).Magnitude <= Config.InteractRange then
+            prompt.HoldDuration = 0; prompt:InputHoldBegin(); task.wait(0.1); prompt:InputHoldEnd()
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(Config.ScanInterval) do
+        local char = player.Character; local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then continue end
+        local mainFolder = workspace:FindFirstChild(Config.MainFolder)
+        local target = nil
+        if mainFolder then
+            local minDist = math.huge
+            for _, item in pairs(mainFolder:GetChildren()) do
+                if selectedUnits[item.Name] then
+                    local cf = getTargetCFrame(item)
+                    if cf and (root.Position - cf.Position).Magnitude < minDist then minDist = (root.Position - cf.Position).Magnitude; target = item end
+                end
+            end
+        end
+        if target then root.CFrame = getTargetCFrame(target); status.Text = "Credit by เด็กกะโปโล: "..target.Name
+        elseif #patrolList > 0 then
+            local zoneNum = patrolList[patrolIdx]
+            local zObj = workspace:FindFirstChild(Config.ZoneFolder) and workspace[Config.ZoneFolder]:FindFirstChild(tostring(zoneNum))
+            if zObj then
+                root.CFrame = getTargetCFrame(zObj) + Vector3.new(0, Config.PatrolHeight, 0)
+                status.Text = "ZONE: "..zoneNum
+                if #patrolList > 1 then patrolIdx = patrolIdx + patrolDir
+                    if patrolIdx > #patrolList then patrolIdx = #patrolList-1; patrolDir = -1 elseif patrolIdx < 1 then patrolIdx = 2; patrolDir = 1 end
+                else patrolIdx = 1 end
+            end
+        else status.Text = "IDLE" end
+    end
+end)

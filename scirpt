@@ -6,7 +6,7 @@ local Config = {
     PatrolHeight = 5,
     ScanInterval = 0.2, 
     InteractRange = 25,
-    SyncSpeed = 0.1, 
+    SyncSpeed = 0.5, 
     SaveFileName = "BrainrotConfig.json", -- ชื่อไฟล์ที่จะเก็บในโฟลเดอร์ workspace
 
     UI = {
@@ -88,11 +88,20 @@ end
 
 local function isItemLocked(item)
     if isIgnored(item) then return true end
-    local itemName = string.gsub(item.Name:lower(), "%s+", "") -- ตัดช่องว่างออก
+    
+    -- ล้างชื่อไอเทมในมือให้สะอาด (ทำตัวเล็ก + ตัดเว้นวรรคออกทั้งหมด)
+    local itemName = string.gsub(item.Name:lower(), "%s+", "")
+    
     for protectedName, isLocked in pairs(protectedUnits) do
         if isLocked then
-            local cleanProtected = string.gsub(protectedName:lower(), "%s+", "") -- ตัดช่องว่างชื่อที่ล็อค
-            if string.find(itemName, cleanProtected) then return true end
+            -- ทำแบบเดียวกันกับชื่อที่เราสั่งล็อคไว้
+            local cleanName = string.gsub(protectedName:lower(), "%s+", "")
+            local targetWithTool = cleanName .. "_tool"
+            
+            -- เช็ค 2 กรณี: ตรงกับชื่อยูนิตเฉยๆ OR ตรงกับชื่อยูนิต_tool
+            if itemName == cleanName or itemName == targetWithTool then 
+                return true 
+            end
         end
     end
     return false
@@ -105,41 +114,38 @@ task.spawn(function()
         local char = player.Character; local bp = player:FindFirstChild("Backpack")
         if not char or not bp then continue end
 
-        -- 1. ตรวจสอบไอเทมในมือ (Character)
+        -- [[ ส่วนที่ 1: กวาดล้างใน Character (เน้นความเร็ว) ]] --
         for _, item in pairs(char:GetChildren()) do
             if item:IsA("Tool") then
                 if isIgnored(item) then continue end
                 
                 if isItemLocked(item) then 
-                    -- ถ้าเป็นตัวล็อค ย้ายลงกระเป๋าทันที
-                    item.Parent = bp 
+                    item.Parent = bp -- ถ้าเป็นตัวล็อค ดีดลงเป้ทันที
                 else
-                    -- ** Double Check Logic **
-                    task.wait(0.05) -- จังหวะหายใจให้ระบบอัปเดตสถานะชื่อ
-                    if not isItemLocked(item) then
-                        local remote = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("SellBrainrot")
-                        if remote then 
-                            remote:FireServer("Single") 
+                    -- ใช้ spawn เพื่อไม่ให้การรอ task.wait ไปขัดจังหวะการเช็คชิ้นต่อไป
+                    task.spawn(function()
+                        task.wait(0.1) -- ลดเวลารอลงครึ่งนึงจาก 0.2
+                        if not isItemLocked(item) and item.Parent == char then
+                            local remote = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("SellBrainrot")
+                            if remote then remote:FireServer("Single") end
                         end
-                    end
+                    end)
                 end
-                task.wait(0.05) -- กัน Remote Spam
             end
         end
 
-        -- 2. ตรวจสอบไอเทมในกระเป๋า (Backpack) เพื่อดึงมาขาย
-        local handBusy = false
-        for _, item in pairs(char:GetChildren()) do 
-            if item:IsA("Tool") and not isIgnored(item) then 
-                handBusy = true break 
-            end 
-        end
+        -- [[ ส่วนที่ 2: ดึงของจากเป้าขึ้นมาเติม (ดึงทีละหลายชิ้นได้) ]] --
+        local toolsInHand = 0
+        for _, item in pairs(char:GetChildren()) do if item:IsA("Tool") and not isIgnored(item) then toolsInHand = toolsInHand + 1 end end
 
-        if not handBusy then
+        -- ถ้าในมือมีของน้อยกว่า 2 ชิ้น ให้ดึงขึ้นมาเติมทันที (ช่วยให้ขายต่อเนื่องขึ้น)
+        if toolsInHand < 2 then
+            local count = 0
             for _, item in pairs(bp:GetChildren()) do
                 if item:IsA("Tool") and not isIgnored(item) and not isItemLocked(item) then
                     item.Parent = char
-                    break -- ดึงมาขายทีละชิ้นตามคิว
+                    count = count + 1
+                    if count >= 2 then break end -- ดึงขึ้นมาเติมทีละ 2 เพื่อความไว
                 end
             end
         end

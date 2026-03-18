@@ -1,13 +1,13 @@
 -- [[ CONFIGURATION ]] --
 local Config = {
-    MainFolder = "VisualBrainrots", 
     ActiveFolder = "ActiveBrainrots", 
     ZoneFolder = "Zones", 
     PatrolHeight = 5,
-    ScanInterval = 0.2, 
+    ScanInterval = 0.1, 
     InteractRange = 25,
-    SyncSpeed = 0.5, 
-    SaveFileName = "BrainrotConfig.json", -- ชื่อไฟล์ที่จะเก็บในโฟลเดอร์ workspace
+    SyncSpeed = 0.05, 
+    ZoneSweepSpeed = 0,
+    SaveFileName = "BrainrotConfig.json",
 
     UI = {
         MainWidth = 320, MainHeight = 550, 
@@ -25,55 +25,39 @@ local Config = {
 
 local UnitNames = {"Evil Six Seven", "Meowl", "Six Seven", "Bombardiro Crocodilo", "Cocofanto Elefanto", "La Vacca Saturno Saturnita", "Glorbo Fruttodrillo", "Boneca Ambalabu", "Tralalero Tralala", "Ganganzelli Trulala", "Trippi Troppi", "Brr Brr Patapim", "Tictac Sahur", "Ketupat Kepat", "Tung Tung Citos", "Odin Din Din Dun", "Pakrahmatmamat", "Orcalero Orcala", "Los Bros", "Cooki and Milki", "Ballerina Cappuccina", "Alessio", "Pipi Kiwi", "Talpa Di Ferro", "Esok Sekolah", "Swag Soda", "Chimpanzini Bananini", "Matteo", "Chillin Chilli", "Noobini Pizzanini", "Cacto Hipopotamo", "Frigo Camelo", "Los Matteos", "Los Tralaleritos", "Grapus Medusi", "Tralalerita Tralala", "Chicleteira Bicicleteira", "Ta Ta Ta Ta Sahur", "Tung Tung Tung Sahur", "Dragon Cannelloni", "Tim Cheese", "Strawberry Elephant", "Trulimero Trulicina", "Tipi Topi Taco", "Capi Taco", "Karkerkar Kurkur", "Espressona Signora", "Bambini Crostini", "Fluri Flura", "Bananita Dolphinita", "Agarrini La Palini", "Gangster Footera", "Pandaccini Bananini", "Lirili Larila", "Bandito Bobrito", "Sneaky Tralaleritos", "Chef Crabracadabra", "Cappuccino Assassino", "Los Crocodillitos", "Rhino Toasterino", "Garama and Madundung", "Svinina Bombardino"}
 
--- [[ SERVICES ]] --
+-- [[ SERVICES & STATE ]] --
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
 
--- [[ STATE ]] --
-local selectedUnits = {}
-local protectedUnits = {} 
-local selectedZones = {}
+local selectedUnits, protectedUnits, selectedZones = {}, {}, {}
 local autoSellActive = false
-local patrolList = {}
-local patrolIdx = 1
-local patrolDir = 1
+local currentActiveZone = nil 
+local currentLockedTarget = nil
+local sweepLog = {} -- เก็บรายการ Object ที่ต้องเคลียร์ในรอบนี้
+local isSweepingLog = false -- สถานะว่ากำลังเคลียร์ Log อยู่หรือไม่
 
 -- [[ SAVE/LOAD SYSTEM ]] --
 local function saveConfig()
-    local data = {
-        selectedUnits = selectedUnits,
-        protectedUnits = protectedUnits,
-        selectedZones = selectedZones,
-        autoSellActive = autoSellActive
-    }
+    local data = {selectedUnits = selectedUnits, protectedUnits = protectedUnits, selectedZones = selectedZones, autoSellActive = autoSellActive}
     local success, json = pcall(function() return HttpService:JSONEncode(data) end)
-    if success then
-        writefile(Config.SaveFileName, json)
-    end
+    if success then writefile(Config.SaveFileName, json) end
 end
 
 local function loadConfig()
     if isfile(Config.SaveFileName) then
-        local success, data = pcall(function() 
-            return HttpService:JSONDecode(readfile(Config.SaveFileName)) 
-        end)
+        local success, data = pcall(function() return HttpService:JSONDecode(readfile(Config.SaveFileName)) end)
         if success then
-            selectedUnits = data.selectedUnits or {}
-            protectedUnits = data.protectedUnits or {}
-            selectedZones = data.selectedZones or {}
+            selectedUnits = data.selectedUnits or {};
+            protectedUnits = data.protectedUnits or {}; 
+            selectedZones = data.selectedZones or {};
             autoSellActive = data.autoSellActive or false
-            
-            -- อัปเดต Patrol List หลังโหลด
-            patrolList = {}; for z,v in pairs(selectedZones) do if v then table.insert(patrolList, tonumber(z)) end end
-            table.sort(patrolList)
+            for z, v in pairs(selectedZones) do if v then currentActiveZone = z break end end
         end
     end
 end
-
--- โหลดค่าก่อนสร้าง UI
 loadConfig()
 
 -- [[ HELPERS ]] --
@@ -82,178 +66,190 @@ local function getTargetCFrame(obj)
     return obj:IsA("BasePart") and obj.CFrame or (obj:IsA("Model") and (obj.PrimaryPart and obj.PrimaryPart.CFrame or obj:GetModelCFrame()))
 end
 
-local function isIgnored(item)
-    return string.find(item.Name:lower(), "bat") ~= nil
-end
-
 local function isItemLocked(item)
-    if isIgnored(item) then return true end
-    
-    -- ล้างชื่อไอเทมในมือให้สะอาด (ทำตัวเล็ก + ตัดเว้นวรรคออกทั้งหมด)
+    if item.Name == "Bat" then return true end
     local itemName = string.gsub(item.Name:lower(), "%s+", "")
-    
     for protectedName, isLocked in pairs(protectedUnits) do
         if isLocked then
-            -- ทำแบบเดียวกันกับชื่อที่เราสั่งล็อคไว้
             local cleanName = string.gsub(protectedName:lower(), "%s+", "")
-            local targetWithTool = cleanName .. "_tool"
-            
-            -- เช็ค 2 กรณี: ตรงกับชื่อยูนิตเฉยๆ OR ตรงกับชื่อยูนิต_tool
-            if itemName == cleanName or itemName == targetWithTool then 
-                return true 
-            end
+            if itemName == cleanName or itemName == cleanName.."_tool" then return true end
         end
     end
     return false
 end
 
--- [[ RUNTIME STORAGE PROCESSOR ]] --
+-- [[ STORAGE PROCESSOR ]] --
 task.spawn(function()
     while task.wait(Config.SyncSpeed) do
         if not autoSellActive then continue end
         local char = player.Character; local bp = player:FindFirstChild("Backpack")
         if not char or not bp then continue end
-
-        -- [[ ส่วนที่ 1: กวาดล้างใน Character (เน้นความเร็ว) ]] --
         for _, item in pairs(char:GetChildren()) do
-            if item:IsA("Tool") then
-                if isIgnored(item) then continue end
-                
-                if isItemLocked(item) then 
-                    item.Parent = bp -- ถ้าเป็นตัวล็อค ดีดลงเป้ทันที
+            if item:IsA("Tool") and item.Name ~= "Bat" then
+                if isItemLocked(item) then item.Parent = bp
                 else
-                    -- ใช้ spawn เพื่อไม่ให้การรอ task.wait ไปขัดจังหวะการเช็คชิ้นต่อไป
-                    task.spawn(function()
-                        task.wait(0.1) -- ลดเวลารอลงครึ่งนึงจาก 0.2
-                        if not isItemLocked(item) and item.Parent == char then
-                            local remote = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("SellBrainrot")
-                            if remote then remote:FireServer("Single") end
-                        end
-                    end)
+                    task.wait(0.1)
+                    if not isItemLocked(item) then
+                        local remote = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("SellBrainrot")
+                        if remote then remote:FireServer("Single") end
+                    end
                 end
             end
         end
-
-        -- [[ ส่วนที่ 2: ดึงของจากเป้าขึ้นมาเติม (ดึงทีละหลายชิ้นได้) ]] --
-        local toolsInHand = 0
-        for _, item in pairs(char:GetChildren()) do if item:IsA("Tool") and not isIgnored(item) then toolsInHand = toolsInHand + 1 end end
-
-        -- ถ้าในมือมีของน้อยกว่า 2 ชิ้น ให้ดึงขึ้นมาเติมทันที (ช่วยให้ขายต่อเนื่องขึ้น)
-        if toolsInHand < 2 then
-            local count = 0
+        local handBusy = false
+        for _, item in pairs(char:GetChildren()) do if item:IsA("Tool") and item.Name ~= "Bat" then handBusy = true break end end
+        if not handBusy then
             for _, item in pairs(bp:GetChildren()) do
-                if item:IsA("Tool") and not isIgnored(item) and not isItemLocked(item) then
-                    item.Parent = char
-                    count = count + 1
-                    if count >= 2 then break end -- ดึงขึ้นมาเติมทีละ 2 เพื่อความไว
-                end
+                if item:IsA("Tool") and item.Name ~= "Bat" and not isItemLocked(item) then item.Parent = char break end
             end
         end
     end
 end)
 
 -- [[ GUI CONSTRUCTION ]] --
-local screenGui = Instance.new("ScreenGui", player.PlayerGui)
-screenGui.Name = "AutoSave_V8_6"
-screenGui.ResetOnSpawn = false
+local screenGui = Instance.new("ScreenGui", player.PlayerGui); screenGui.Name = "ActiveSync_Final_Fixed"; screenGui.ResetOnSpawn = false
+local mainFrame = Instance.new("Frame", screenGui); mainFrame.Size = UDim2.new(0, Config.UI.MainWidth, 0, Config.UI.MainHeight); mainFrame.Position = UDim2.new(0.5, -Config.UI.MainWidth/2, 0.2, 0); mainFrame.BackgroundColor3 = Config.UI.BgColor; mainFrame.BackgroundTransparency = Config.UI.BgTransparency; mainFrame.Active = true; mainFrame.Draggable = true; Instance.new("UICorner", mainFrame)
 
-local mainFrame = Instance.new("Frame", screenGui)
-mainFrame.Size = UDim2.new(0, Config.UI.MainWidth, 0, Config.UI.MainHeight)
-mainFrame.Position = UDim2.new(0.5, -Config.UI.MainWidth/2, 0.2, 0)
-mainFrame.BackgroundColor3 = Config.UI.BgColor; mainFrame.BackgroundTransparency = Config.UI.BgTransparency
-mainFrame.Active = true; mainFrame.Draggable = true; Instance.new("UICorner", mainFrame)
-
-local tabFrame = Instance.new("Frame", mainFrame)
-tabFrame.Size = UDim2.new(1, -20, 0, 40); tabFrame.Position = UDim2.new(0, 10, 0, 10); tabFrame.BackgroundTransparency = 1
-
-local unitPage = Instance.new("Frame", mainFrame)
-local zonePage = Instance.new("Frame", mainFrame)
-local sellPage = Instance.new("Frame", mainFrame)
-
-for _, p in pairs({unitPage, zonePage, sellPage}) do
-    p.Size = UDim2.new(1, 0, 1, -100); p.Position = UDim2.new(0, 0, 0, 60); p.BackgroundTransparency = 1; p.Visible = false
-end
+local tabFrame = Instance.new("Frame", mainFrame); tabFrame.Size = UDim2.new(1, -20, 0, 40); tabFrame.Position = UDim2.new(0, 10, 0, 10); tabFrame.BackgroundTransparency = 1
+local unitPage = Instance.new("Frame", mainFrame); local zonePage = Instance.new("Frame", mainFrame); local sellPage = Instance.new("Frame", mainFrame)
+for _, p in pairs({unitPage, zonePage, sellPage}) do p.Size = UDim2.new(1, 0, 1, -110); p.Position = UDim2.new(0, 0, 0, 60); p.BackgroundTransparency = 1; p.Visible = false end
 unitPage.Visible = true
 
 local function createTabBtn(text, pos, width, page)
-    local btn = Instance.new("TextButton", tabFrame)
-    btn.Size = UDim2.new(width, -4, 1, 0); btn.Position = pos; btn.Text = text
-    btn.TextSize = 12; btn.Font = Config.UI.Font; btn.BackgroundColor3 = Color3.fromRGB(35,35,35); btn.TextColor3 = Config.UI.TextColor; Instance.new("UICorner", btn)
+    local btn = Instance.new("TextButton", tabFrame); btn.Size = UDim2.new(width, -4, 1, 0); btn.Position = pos; btn.Text = text; btn.TextSize = 12; btn.Font = Config.UI.Font; btn.BackgroundColor3 = Color3.fromRGB(35,35,35); btn.TextColor3 = Config.UI.TextColor; Instance.new("UICorner", btn)
     btn.MouseButton1Click:Connect(function() unitPage.Visible = false; zonePage.Visible = false; sellPage.Visible = false; page.Visible = true end)
-    return btn
 end
+createTabBtn("Units", UDim2.new(0,0,0,0), 0.33, unitPage); createTabBtn("Zones", UDim2.new(0.33,0,0,0), 0.33, zonePage); createTabBtn("Auto Sell", UDim2.new(0.66,0,0,0), 0.34, sellPage)
 
-createTabBtn("Units", UDim2.new(0,0,0,0), 0.33, unitPage)
-createTabBtn("Zones", UDim2.new(0.33,0,0,0), 0.33, zonePage)
-createTabBtn("Auto Sell", UDim2.new(0.66,0,0,0), 0.34, sellPage)
+-- UNITS PAGE
+local uSearch = Instance.new("TextBox", unitPage); uSearch.Size = UDim2.new(1, -20, 0, 30); uSearch.Position = UDim2.new(0, 10, 0, 0); uSearch.PlaceholderText = "Search Units..."; uSearch.Text = ""; uSearch.BackgroundColor3 = Color3.fromRGB(40,40,40); uSearch.TextColor3 = Config.UI.TextColor; uSearch.Font = Config.UI.Font; uSearch.TextSize = 14; Instance.new("UICorner", uSearch)
+local selFrame = Instance.new("Frame", unitPage); selFrame.Size = UDim2.new(1,-20,0,35); selFrame.Position = UDim2.new(0,10,0,35); selFrame.BackgroundTransparency = 1
+local sAll = Instance.new("TextButton", selFrame); sAll.Size = UDim2.new(0.48,0,1,0); sAll.Text = "Select All"; sAll.TextColor3 = Config.UI.TextColor; sAll.BackgroundColor3 = Config.UI.SelectAllColor; Instance.new("UICorner", sAll)
+local cAll = Instance.new("TextButton", selFrame); cAll.Size = UDim2.new(0.48,0,1,0); cAll.Position = UDim2.new(0.52,0,0,0); cAll.Text = "Clear All"; cAll.TextColor3 = Config.UI.TextColor; cAll.BackgroundColor3 = Config.UI.ClearAllColor; Instance.new("UICorner", cAll)
+local unitScroll = Instance.new("ScrollingFrame", unitPage); unitScroll.Size = UDim2.new(1,-20,1,-80); unitScroll.Position = UDim2.new(0,10,0,75); unitScroll.BackgroundTransparency = 1; unitScroll.AutomaticCanvasSize = "Y"; unitScroll.ScrollBarThickness = 2; Instance.new("UIListLayout", unitScroll).Padding = UDim.new(0,5)
 
--- Units UI
-local selFrame = Instance.new("Frame", unitPage)
-selFrame.Size = UDim2.new(1,-20,0,35); selFrame.Position = UDim2.new(0,10,0,0); selFrame.BackgroundTransparency = 1
-local sAll = Instance.new("TextButton", selFrame); sAll.Size = UDim2.new(0.48,0,1,0); sAll.Text = "เลือกทั้งหมด (แนะนำ)"; sAll.TextColor3 = Config.UI.TextColor; sAll.BackgroundColor3 = Config.UI.SelectAllColor; Instance.new("UICorner", sAll)
-local cAll = Instance.new("TextButton", selFrame); cAll.Size = UDim2.new(0.48,0,1,0); cAll.Position = UDim2.new(0.52,0,0,0); cAll.Text = "ล้างทั้งหมด"; cAll.TextColor3 = Config.UI.TextColor; cAll.BackgroundColor3 = Config.UI.ClearAllColor; Instance.new("UICorner", cAll)
+-- ZONES PAGE
+local zoneScroll = Instance.new("ScrollingFrame", zonePage); zoneScroll.Size = UDim2.new(1,-20,1,0); zoneScroll.Position = UDim2.new(0,10,0,0); zoneScroll.BackgroundTransparency = 1; zoneScroll.AutomaticCanvasSize = "Y"; zoneScroll.ScrollBarThickness = 2; Instance.new("UIListLayout", zoneScroll).Padding = UDim.new(0,5)
 
-local unitSearch = Instance.new("TextBox", unitPage)
-unitSearch.Size = UDim2.new(1,-20,0,35); unitSearch.Position = UDim2.new(0,10,0,45); unitSearch.PlaceholderText = "🔍 ค้นหาตัว..."; unitSearch.BackgroundColor3 = Color3.fromRGB(40,40,40); unitSearch.TextColor3 = Config.UI.TextColor; Instance.new("UICorner", unitSearch)
+-- SELL PAGE
+local sellTog = Instance.new("TextButton", sellPage); sellTog.Size = UDim2.new(1,-20,0,45); sellTog.Position = UDim2.new(0,10,0,0); sellTog.Text = autoSellActive and "Auto Sell: ON" or "Auto Sell: OFF"; sellTog.BackgroundColor3 = autoSellActive and Config.UI.SellActiveColor or Config.UI.BtnDefaultColor; sellTog.TextColor3 = Config.UI.TextColor; Instance.new("UICorner", sellTog)
+local sellScroll = Instance.new("ScrollingFrame", sellPage); sellScroll.Size = UDim2.new(1,-20,1,-55); sellScroll.Position = UDim2.new(0,10,0,55); sellScroll.BackgroundTransparency = 1; sellScroll.AutomaticCanvasSize = "Y"; sellScroll.ScrollBarThickness = 2; Instance.new("UIListLayout", sellScroll).Padding = UDim.new(0,5)
 
-local unitScroll = Instance.new("ScrollingFrame", unitPage)
-unitScroll.Size = UDim2.new(1,-20,0,320); unitScroll.Position = UDim2.new(0,10,0,90); unitScroll.BackgroundTransparency = 1; unitScroll.AutomaticCanvasSize = "Y"
-Instance.new("UIListLayout", unitScroll).Padding = UDim.new(0,5)
+local status = Instance.new("TextLabel", mainFrame); status.Size = UDim2.new(1,0,0,40); status.Position = UDim2.new(0,0,1,-40); status.BackgroundTransparency = 1; status.Text = "READY"; status.TextColor3 = Config.UI.TextColor; status.Font = Config.UI.Font; status.TextSize = 14
 
--- Auto Sell UI
-local sellTog = Instance.new("TextButton", sellPage)
-sellTog.Size = UDim2.new(1,-20,0,45); sellTog.Position = UDim2.new(0,10,0,0); sellTog.Text = autoSellActive and "ออโต้ขาย: เปิดอยู่" or "ออโต้ขาย: ปิดอยู่"; sellTog.BackgroundColor3 = autoSellActive and Config.UI.SellActiveColor or Config.UI.BtnDefaultColor; sellTog.TextColor3 = Config.UI.TextColor; Instance.new("UICorner", sellTog)
-
-local sellSearch = Instance.new("TextBox", sellPage)
-sellSearch.Size = UDim2.new(1,-20,0,35); sellSearch.Position = UDim2.new(0,10,0,55); sellSearch.PlaceholderText = "🔍 ค้นหาตัว..."; sellSearch.BackgroundColor3 = Color3.fromRGB(40,40,40); sellSearch.TextColor3 = Config.UI.TextColor; Instance.new("UICorner", sellSearch)
-
-local sellScroll = Instance.new("ScrollingFrame", sellPage)
-sellScroll.Size = UDim2.new(1,-20,0,265); sellScroll.Position = UDim2.new(0,10,0,100); sellScroll.BackgroundTransparency = 1; sellScroll.AutomaticCanvasSize = "Y"
-Instance.new("UIListLayout", sellScroll).Padding = UDim.new(0,5)
-
-local status = Instance.new("TextLabel", mainFrame)
-status.Size = UDim2.new(1,0,0,40); status.Position = UDim2.new(0,0,1,-40); status.BackgroundTransparency = 1; status.Text = "READY"; status.TextColor3 = Config.UI.TextColor
-
--- Generate Buttons with Auto Load State
 local uBtns, pBtns = {}, {}
 for _, n in ipairs(UnitNames) do
     local b = Instance.new("TextButton", unitScroll); b.Size = UDim2.new(1,-10,0,35); b.Text = n; b.TextColor3 = Config.UI.TextColor; b.BackgroundColor3 = selectedUnits[n] and Config.UI.BtnSelectedColor or Config.UI.BtnDefaultColor; Instance.new("UICorner", b)
     b.MouseButton1Click:Connect(function() selectedUnits[n] = not selectedUnits[n]; b.BackgroundColor3 = selectedUnits[n] and Config.UI.BtnSelectedColor or Config.UI.BtnDefaultColor; saveConfig() end)
     uBtns[n] = b
-    
     local pb = b:Clone(); pb.Parent = sellScroll; pb.BackgroundColor3 = protectedUnits[n] and Color3.fromRGB(150,40,40) or Config.UI.BtnDefaultColor
     pb.MouseButton1Click:Connect(function() protectedUnits[n] = not protectedUnits[n]; pb.BackgroundColor3 = protectedUnits[n] and Color3.fromRGB(150,40,40) or Config.UI.BtnDefaultColor; saveConfig() end)
     pBtns[n] = pb
 end
 
-local zoneScroll = Instance.new("ScrollingFrame", zonePage)
-zoneScroll.Size = UDim2.new(1,-20,1,0); zoneScroll.Position = UDim2.new(0,10,0,0); zoneScroll.BackgroundTransparency = 1; zoneScroll.AutomaticCanvasSize = "Y"
-Instance.new("UIListLayout", zoneScroll).Padding = UDim.new(0,5)
-for i=1,10 do
-    local b = Instance.new("TextButton", zoneScroll); b.Size = UDim2.new(1,-10,0,40); b.Text = "Zone "..i; b.TextColor3 = Config.UI.TextColor; b.BackgroundColor3 = selectedZones[tostring(i)] and Config.UI.ZoneSelectedColor or Config.UI.BtnDefaultColor; Instance.new("UICorner", b)
-    b.MouseButton1Click:Connect(function()
-        selectedZones[tostring(i)] = not selectedZones[tostring(i)]; b.BackgroundColor3 = selectedZones[tostring(i)] and Config.UI.ZoneSelectedColor or Config.UI.BtnDefaultColor
-        patrolList = {}; for z,v in pairs(selectedZones) do if v then table.insert(patrolList, tonumber(z)) end end; table.sort(patrolList); patrolIdx = 1; saveConfig()
-    end)
-end
+-- Search Logic
+uSearch:GetPropertyChangedSignal("Text"):Connect(function()
+    local filter = uSearch.Text:lower()
+    for name, btn in pairs(uBtns) do btn.Visible = string.find(name:lower(), filter) ~= nil end
+end)
 
--- Handlers
 sAll.MouseButton1Click:Connect(function() for n,b in pairs(uBtns) do selectedUnits[n]=true; b.BackgroundColor3=Config.UI.BtnSelectedColor end; saveConfig() end)
 cAll.MouseButton1Click:Connect(function() selectedUnits={}; for n,b in pairs(uBtns) do b.BackgroundColor3=Config.UI.BtnDefaultColor end; saveConfig() end)
 sellTog.MouseButton1Click:Connect(function() autoSellActive = not autoSellActive; sellTog.Text = autoSellActive and "Auto Sell: ON" or "Auto Sell: OFF"; sellTog.BackgroundColor3 = autoSellActive and Config.UI.SellActiveColor or Config.UI.BtnDefaultColor; saveConfig() end)
-unitSearch:GetPropertyChangedSignal("Text"):Connect(function() local f = unitSearch.Text:lower() for n,b in pairs(uBtns) do b.Visible = n:lower():find(f) ~= nil end end)
-sellSearch:GetPropertyChangedSignal("Text"):Connect(function() local f = sellSearch.Text:lower() for n,p in pairs(pBtns) do p.Visible = n:lower():find(f) ~= nil end end)
 
--- [[ RUNTIME LOOPS (MOVEMENT) ]] --
+local zBtns = {}
+for i=1,10 do
+    local zn = tostring(i); local b = Instance.new("TextButton", zoneScroll); b.Size = UDim2.new(1,-10,0,40); b.Text = "Zone "..zn; b.TextColor3 = Config.UI.TextColor; b.BackgroundColor3 = selectedZones[zn] and Config.UI.ZoneSelectedColor or Config.UI.BtnDefaultColor; Instance.new("UICorner", b); zBtns[zn] = b
+    b.MouseButton1Click:Connect(function()
+        if currentActiveZone == zn then selectedZones[zn] = false; currentActiveZone = nil; b.BackgroundColor3 = Config.UI.BtnDefaultColor
+        else
+            if currentActiveZone and zBtns[currentActiveZone] then selectedZones[currentActiveZone] = false; zBtns[currentActiveZone].BackgroundColor3 = Config.UI.BtnDefaultColor end
+            selectedZones[zn] = true; currentActiveZone = zn; b.BackgroundColor3 = Config.UI.ZoneSelectedColor
+        end
+        saveConfig()
+    end)
+end
+
+-- [[ MOVEMENT & SWEEPER ENGINE ]] --
+local function findTargetUnit()
+    local folder = workspace:FindFirstChild(Config.ActiveFolder)
+    if not folder then return nil end
+    for _, hitbox in pairs(folder:GetChildren()) do
+        if hitbox.Name == "ServerHitbox" then
+            for unitName, isSelected in pairs(selectedUnits) do
+                if isSelected and hitbox:FindFirstChild(unitName) then return hitbox end
+            end
+        end
+    end
+    return nil
+end
+
+local function createSweepLog(zonePos)
+    local folder = workspace:FindFirstChild(Config.ActiveFolder)
+    if not folder then return end
+    
+    sweepLog = {} -- ล้าง Log เก่าเพื่อเริ่มรอบใหม่
+    local children = folder:GetChildren()
+    
+    for i = 1, #children do
+        local hitbox = children[i]
+        if hitbox.Name == "ServerHitbox" then
+            local cf = getTargetCFrame(hitbox)
+            if cf then
+                local dist = (zonePos - cf.Position).Magnitude
+                if dist < 200 then 
+                    table.insert(sweepLog, hitbox) -- บันทึกเข้าคิว
+                end
+            end
+        end
+    end
+    
+    if #sweepLog > 0 then
+        isSweepingLog = true
+        print("--------------------------------")
+        print("[System]: สร้าง Log ใหม่สำเร็จ!")
+        print("[System]: พบ Units ในระยะ 200 เมตร จำนวน " .. #sweepLog .. " ตัว")
+        print("--------------------------------")
+    else
+        isSweepingLog = false
+    end
+end
+
+local function getTargetFromLog()
+    if #sweepLog == 0 then 
+        if isSweepingLog then
+            print("[System]: ---> เคลียร์ Log ทั้งหมดเรียบร้อย <---")
+            isSweepingLog = false 
+        end
+        return nil 
+    end
+    
+    -- วนเช็คจากหลังมาหน้าเพื่อดึงตัวที่ยังมีตัวตนอยู่จริง
+    for i = #sweepLog, 1, -1 do
+        local obj = sweepLog[i]
+        if obj and obj.Parent == workspace:FindFirstChild(Config.ActiveFolder) then
+            return obj -- ส่งเป้าหมายออกไป
+        else
+            -- ถ้าตัวนี้ไม่อยู่แล้ว (โดนเก็บหรือหายไป) ให้ลบออกจากโพย
+            table.remove(sweepLog, i)
+        end
+    end
+    
+    return nil
+end
+
 RunService.Stepped:Connect(function()
     local char = player.Character; local root = char and char:FindFirstChild("HumanoidRootPart")
     if not root then return end
-    local activeFolder = workspace:FindFirstChild(Config.ActiveFolder)
-    if not activeFolder then return end
-    for _, obj in pairs(activeFolder:GetChildren()) do
-        local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
-        if prompt and getTargetCFrame(obj) and (root.Position - getTargetCFrame(obj).Position).Magnitude <= Config.InteractRange then
-            prompt.HoldDuration = 0; prompt:InputHoldBegin(); task.wait(0.1); prompt:InputHoldEnd()
+    local folder = workspace:FindFirstChild(Config.ActiveFolder)
+    if folder then
+        for _, hitbox in pairs(folder:GetChildren()) do
+            if hitbox.Name == "ServerHitbox" then
+                local prompt = hitbox:FindFirstChildWhichIsA("ProximityPrompt", true)
+                if prompt and (root.Position - hitbox.Position).Magnitude <= Config.InteractRange then
+                    prompt.HoldDuration = 0; prompt:InputHoldBegin(); task.wait(0.01); prompt:InputHoldEnd()
+                end
+            end
         end
     end
 end)
@@ -262,28 +258,49 @@ task.spawn(function()
     while task.wait(Config.ScanInterval) do
         local char = player.Character; local root = char and char:FindFirstChild("HumanoidRootPart")
         if not root then continue end
-        local mainFolder = workspace:FindFirstChild(Config.MainFolder)
-        local target = nil
-        if mainFolder then
-            local minDist = math.huge
-            for _, item in pairs(mainFolder:GetChildren()) do
-                if selectedUnits[item.Name] then
-                    local cf = getTargetCFrame(item)
-                    if cf and (root.Position - cf.Position).Magnitude < minDist then minDist = (root.Position - cf.Position).Magnitude; target = item end
+        
+        local rareTarget = findTargetUnit()
+        if rareTarget then
+            root.CFrame = getTargetCFrame(rareTarget)
+            status.Text = "COLLECTING RARE: " .. rareTarget.Name
+            task.wait(Config.SyncSpeed)
+        elseif currentActiveZone then
+            local zoneObj = workspace:FindFirstChild(Config.ZoneFolder) and workspace[Config.ZoneFolder]:FindFirstChild(currentActiveZone)
+            if zoneObj then
+                local zCF = getTargetCFrame(zoneObj)
+                local distToZone = (root.Position - zCF.Position).Magnitude
+                
+                if distToZone > 15 then
+                    root.CFrame = zCF + Vector3.new(0, Config.PatrolHeight, 0)
+                    status.Text = "WARPING TO ZONE"
+                else
+                    -- แก้ไขตรงนี้: ถ้ายังมีของใน Log (isSweepingLog เป็น true) ห้ามสแกนใหม่เด็ดขาด
+                    if not isSweepingLog or #sweepLog == 0 then
+                        -- ตรวจสอบซ้ำอีกครั้งว่าไม่มีของค้างจริงๆ ก่อนสร้างใหม่
+                        if #sweepLog == 0 then
+                            createSweepLog(zCF.Position)
+                        end
+                    end
+                    
+                    local target = getTargetFromLog()
+                    if target then
+                        root.CFrame = getTargetCFrame(target)
+                        status.Text = "LOG CLEARING: " .. #sweepLog .. " LEFT"
+                    else
+                        -- ถ้าสแกนแล้วไม่มีตัวจริงๆ ให้รอที่จุด Standby
+                        root.CFrame = zCF + Vector3.new(0, Config.PatrolHeight, 0)
+                        status.Text = "WAITING FOR NEW UNITS..."
+                    end
                 end
             end
-        end
-        if target then root.CFrame = getTargetCFrame(target); status.Text = "Credit by เด็กกะโปโล: "..target.Name
-        elseif #patrolList > 0 then
-            local zoneNum = patrolList[patrolIdx]
-            local zObj = workspace:FindFirstChild(Config.ZoneFolder) and workspace[Config.ZoneFolder]:FindFirstChild(tostring(zoneNum))
-            if zObj then
-                root.CFrame = getTargetCFrame(zObj) + Vector3.new(0, Config.PatrolHeight, 0)
-                status.Text = "ZONE: "..zoneNum
-                if #patrolList > 1 then patrolIdx = patrolIdx + patrolDir
-                    if patrolIdx > #patrolList then patrolIdx = #patrolList-1; patrolDir = -1 elseif patrolIdx < 1 then patrolIdx = 2; patrolDir = 1 end
-                else patrolIdx = 1 end
+            task.wait(Config.ZoneSweepSpeed)
+        else
+            status.Text = "IDLE"
+            if isSweepingLog or #sweepLog > 0 then
+                sweepLog = {}
+                isSweepingLog = false
+                print("[System]: หยุดทำงาน - ล้างข้อมูลค้างคา")
             end
-        else status.Text = "IDLE" end
+        end
     end
 end)

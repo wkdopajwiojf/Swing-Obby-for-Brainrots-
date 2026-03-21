@@ -23,7 +23,7 @@ local Config = {
     }
 }
 
-local UnitNames = {"Evil Six Seven", "Meowl", "Six Seven", "Bombardiro Crocodilo", "Cocofanto Elefanto", "La Vacca Saturno Saturnita", "Glorbo Fruttodrillo", "Boneca Ambalabu", "Tralalero Tralala", "Ganganzelli Trulala", "Trippi Troppi", "Brr Brr Patapim", "Tictac Sahur", "Ketupat Kepat", "Tung Tung Citos", "Odin Din Din Dun", "Pakrahmatmamat", "Orcalero Orcala", "Los Bros", "Cooki and Milki", "Ballerina Cappuccina", "Alessio", "Pipi Kiwi", "Talpa Di Ferro", "Esok Sekolah", "Swag Soda", "Chimpanzini Bananini", "Matteo", "Chillin Chilli", "Noobini Pizzanini", "Cacto Hipopotamo", "Frigo Camelo", "Los Matteos", "Los Tralaleritos", "Grapus Medusi", "Tralalerita Tralala", "Chicleteira Bicicleteira", "Ta Ta Ta Ta Sahur", "Tung Tung Tung Sahur", "Dragon Cannelloni", "Tim Cheese", "Strawberry Elephant", "Trulimero Trulicina", "Tipi Topi Taco", "Capi Taco", "Karkerkar Kurkur", "Espressona Signora", "Bambini Crostini", "Fluri Flura", "Bananita Dolphinita", "Agarrini La Palini", "Gangster Footera", "Pandaccini Bananini", "Lirili Larila", "Bandito Bobrito", "Sneaky Tralaleritos", "Chef Crabracadabra", "Cappuccino Assassino", "Los Crocodillitos", "Rhino Toasterino", "Garama and Madundung", "Svinina Bombardino"}
+local UnitNames = {"Job job job sahur","Nuclearo dinossauro", "Bisonte giuppitere", "Nooooo my hotspot", "Tralelero hydrala", "Hydra cannenoli", "Evil Six Seven", "Meowl", "Six Seven", "Bombardiro Crocodilo", "Cocofanto Elefanto", "La Vacca Saturno Saturnita", "Glorbo Fruttodrillo", "Boneca Ambalabu", "Tralalero Tralala", "Ganganzelli Trulala", "Trippi Troppi", "Brr Brr Patapim", "Tictac Sahur", "Ketupat Kepat", "Tung Tung Citos", "Odin Din Din Dun", "Pakrahmatmamat", "Orcalero Orcala", "Los Bros", "Cooki and Milki", "Ballerina Cappuccina", "Alessio", "Pipi Kiwi", "Talpa Di Ferro", "Esok Sekolah", "Swag Soda", "Chimpanzini Bananini", "Matteo", "Chillin Chilli", "Noobini Pizzanini", "Cacto Hipopotamo", "Frigo Camelo", "Los Matteos", "Los Tralaleritos", "Grapus Medusi", "Tralalerita Tralala", "Chicleteira Bicicleteira", "Ta Ta Ta Ta Sahur", "Tung Tung Tung Sahur", "Dragon Cannelloni", "Tim Cheese", "Strawberry Elephant", "Trulimero Trulicina", "Tipi Topi Taco", "Capi Taco", "Karkerkar Kurkur", "Espressona Signora", "Bambini Crostini", "Fluri Flura", "Bananita Dolphinita", "Agarrini La Palini", "Gangster Footera", "Pandaccini Bananini", "Lirili Larila", "Bandito Bobrito", "Sneaky Tralaleritos", "Chef Crabracadabra", "Cappuccino Assassino", "Los Crocodillitos", "Rhino Toasterino", "Garama and Madundung", "Svinina Bombardino"}
 
 -- [[ SERVICES & STATE ]] --
 local Players = game:GetService("Players")
@@ -78,6 +78,8 @@ local function isItemLocked(item)
     return false
 end
 
+local sellAttempts = {} -- เก็บจำนวนครั้งที่พยายามขายแต่ละ Tool
+
 -- [[ STORAGE PROCESSOR ]] --
 task.spawn(function()
     while task.wait(Config.SyncSpeed) do
@@ -85,17 +87,30 @@ task.spawn(function()
         local char = player.Character; local bp = player:FindFirstChild("Backpack")
         if not char or not bp then continue end
         for _, item in pairs(char:GetChildren()) do
-            if item:IsA("Tool") and item.Name ~= "Bat" then
-                if isItemLocked(item) then item.Parent = bp
-                else
-                    task.wait(0.1)
-                    if not isItemLocked(item) then
-                        local remote = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("SellBrainrot")
-                        if remote then remote:FireServer("Single") end
-                    end
+    if item:IsA("Tool") and item.Name ~= "Bat" then
+        local id = item.Name
+		if not sellAttempts[id] then sellAttempts[id] = 0 end
+
+        if isItemLocked(item) then
+            item.Parent = bp
+            sellAttempts[id] = nil -- ล้างตัวนับของ Tool ที่ lock
+			item.Parent = bp -- ส่งกลับ Backpack
+        elseif sellAttempts[id] < 3 then
+            task.wait(0.1)
+            if not isItemLocked(item) then
+                local remote = ReplicatedStorage:FindFirstChild("Remotes") 
+                                and ReplicatedStorage.Remotes:FindFirstChild("SellBrainrot")
+                if remote then
+                    remote:FireServer("Single")
+                    sellAttempts[id] = sellAttempts[id] + 1
                 end
             end
+        else
+            -- ขายครบ 3 ครั้งแล้วยังไม่หาย ให้ ignore
+            sellAttempts[id] = nil
         end
+    end
+end
         local handBusy = false
         for _, item in pairs(char:GetChildren()) do if item:IsA("Tool") and item.Name ~= "Bat" then handBusy = true break end end
         if not handBusy then
@@ -158,13 +173,29 @@ cAll.MouseButton1Click:Connect(function() selectedUnits={}; for n,b in pairs(uBt
 sellTog.MouseButton1Click:Connect(function() autoSellActive = not autoSellActive; sellTog.Text = autoSellActive and "Auto Sell: ON" or "Auto Sell: OFF"; sellTog.BackgroundColor3 = autoSellActive and Config.UI.SellActiveColor or Config.UI.BtnDefaultColor; saveConfig() end)
 
 local zBtns = {}
-for i=1,10 do
-    local zn = tostring(i); local b = Instance.new("TextButton", zoneScroll); b.Size = UDim2.new(1,-10,0,40); b.Text = "Zone "..zn; b.TextColor3 = Config.UI.TextColor; b.BackgroundColor3 = selectedZones[zn] and Config.UI.ZoneSelectedColor or Config.UI.BtnDefaultColor; Instance.new("UICorner", b); zBtns[zn] = b
+for i=1,12 do  -- เพิ่ม Zone 11 และ 12
+    local zn = tostring(i)
+    local b = Instance.new("TextButton", zoneScroll)
+    b.Size = UDim2.new(1,-10,0,40)
+    b.Text = "Zone "..zn
+    b.TextColor3 = Config.UI.TextColor
+    b.BackgroundColor3 = selectedZones[zn] and Config.UI.ZoneSelectedColor or Config.UI.BtnDefaultColor
+    Instance.new("UICorner", b)
+    zBtns[zn] = b
+
     b.MouseButton1Click:Connect(function()
-        if currentActiveZone == zn then selectedZones[zn] = false; currentActiveZone = nil; b.BackgroundColor3 = Config.UI.BtnDefaultColor
+        if currentActiveZone == zn then
+            selectedZones[zn] = false
+            currentActiveZone = nil
+            b.BackgroundColor3 = Config.UI.BtnDefaultColor
         else
-            if currentActiveZone and zBtns[currentActiveZone] then selectedZones[currentActiveZone] = false; zBtns[currentActiveZone].BackgroundColor3 = Config.UI.BtnDefaultColor end
-            selectedZones[zn] = true; currentActiveZone = zn; b.BackgroundColor3 = Config.UI.ZoneSelectedColor
+            if currentActiveZone and zBtns[currentActiveZone] then
+                selectedZones[currentActiveZone] = false
+                zBtns[currentActiveZone].BackgroundColor3 = Config.UI.BtnDefaultColor
+            end
+            selectedZones[zn] = true
+            currentActiveZone = zn
+            b.BackgroundColor3 = Config.UI.ZoneSelectedColor
         end
         saveConfig()
     end)
